@@ -1,0 +1,360 @@
+---
+title: "IST707-Project"
+author: "Shuying Zhao  Ami Doshi  Tian Xu"
+date: "5/3/2019"
+output: word_document
+---
+
+#Data Preparation
+
+Insert datasets
+
+```{r}
+library(readr)
+test<-read.csv("~/Desktop/707 project data/dengue_features_test.csv")
+label_train<-read.csv("~/Desktop/707 project data/dengue_labels_train.csv")
+train<-read.csv("~/Desktop/707 project data/dengue_features_train.csv")
+```
+
+Aftering combining the dataset with label and attributes, we deleted the columns 'week start date' which is not related to our objective goal to predict the dengue fever disease.
+
+```{r}
+data_set<-data.frame(label_train$total_cases,train)
+data_set <- data_set[,-which(colnames(data_set)=='week_start_date')]
+
+```
+
+Solve the missing value
+```{r}
+sum(is.na(data_set))
+t(sapply(data_set, function(x) sum(is.na(x))))
+```
+
+We choose the replace the na value with the latest value.
+
+```{r}
+library(zoo)
+data_set<-data_set
+for (i in 1:ncol(data_set)){
+    data_set[,i]<-na.locf(data_set[,i])
+  }
+```
+
+Check the na value with the new dataset, we made sure that there is no missing values in the dataset.
+
+```{r}
+sum(!complete.cases(data_set))
+```
+
+Check the total cases distribution for the further distribution
+
+```{r}
+library(dplyr)
+library(arules)
+  
+range(data_set$label_train.total_cases)
+hist(data_set$label_train.total_cases,breaks = 100)
+  
+d <- density(data_set$label_train.total_cases)
+plot(d) 
+quantile(data_set$label_train.total_cases,p=c(0.2,0.4,0.5,0.6,0.8))
+```
+
+We found that there are lots of the low value of total cases. According to the total cases distribution, we would category the numeric variables into categoric variables with fix breaks. 
+
+For the further data processing, we did it in different algorithms seperately. However, I would use the same sampling for the final model comparsion with the Hand-Out method.
+
+```{r}
+library(caret)
+library(klaR)
+trainindex<-createDataPartition(data_set$label_train.total_cases,p=0.8,list=FALSE)
+train<-data_set[trainindex,]
+valid<-data_set[-trainindex,]
+table(train$city)
+table(valid$city)
+```
+
+Visualize the relations among different factors to see a big picture of the dataset
+
+```{r eval=FALSE}
+####City Cases####
+case_by_city<-train%>%
+  group_by(city) %>%
+  summarise(avg_cases=mean(label_train.total_cases, na.rm = T)) %>%
+  arrange(desc(avg_cases))
+
+case_by_city$city<-factor(case_by_city$city,
+                          levels = case_by_city$city)
+
+ggplot(case_by_city, aes(x=city, y=avg_cases)) +
+  geom_bar(stat = "identity") + theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        panel.grid.major.x = element_blank())
+
+####Case Density by Years######
+ggplot(train,aes(label_train.total_cases))+
+  geom_density(aes(fill=factor(year)))+
+  labs(title = "Density Plot", subtitle = "Total Cases Grouped by Years", caption = "Dengue Fever",
+       x="Year", fill="Cylinder")
+
+####City, Cases, Tem, Precipi#####
+ggplot(train, aes(x=reanalysis_avg_temp_k, y=train$reanalysis_sat_precip_amt_mm))+
+  geom_point(aes(color=as.factor(city), size=label_train.total_cases)) +
+  geom_smooth(method = "lm")
+
+######Violin, year, cases######
+ggplot(train, aes(factor(year), label_train.total_cases)) + geom_violin()
+
+######Violin, humidity, year######
+ggplot(train, aes(factor(year), reanalysis_relative_humidity_percent)) + geom_violin()
+
+######Violin, temperature, year######
+ggplot(train, aes(factor(year), train$station_avg_temp_c)) + geom_violin()
+
+######Violin, precipitation, year######
+ggplot(train, aes(factor(year), precipitation_amt_mm)) + geom_violin()
+```
+
+#Section 1: Association Rules
+
+First, we prepare datase by converting numeric variables into the categoric varialbes.
+
+```{r}
+train_arule<-train
+for (i in 3:ncol(train_arule)){
+  train_arule[,i]<-discretize(train[,i],method = 'cluster',breaks = 3,labels =c("low","middle","high"))
+}
+
+valid_arule<-valid
+for (i in 3:ncol(valid_arule)){
+  valid_arule[,i]<-discretize(valid[,i],method = 'cluster',breaks = 3,labels =c("low","middle","high"))
+}
+```
+
+For total cases, we decide to category the total cases in different way according to its distribution.
+
+```{r}
+train_arule$label_train.total_cases<-discretize(train_arule$label_train.total_cases,method='fixed',breaks=c(0,12,461),labels=c("low","high"))
+
+valid_arule$label_train.total_cases<-discretize(valid_arule$label_train.total_cases,method='fixed',breaks=c(0,12,461),labels=c("low","high"))
+
+summary(train_arule$label_train.total_cases)
+```
+
+Then we did the association rules with supervisor learning to find the reason why total cases would be low.
+
+```{r}
+train_arule <- as(train_arule,"transactions")
+ruleslow <- apriori(train_arule, parameter = list(support = 0.1, confidence = 0.3,minlen=2,maxlen=10),appearance = list(default = "lhs", rhs = c("label_train.total_cases=low")),control = list(verbose = F))
+
+inspect(head(sort(ruleslow,by='lift',descreaing=T),20))
+
+```
+
+I would also find why total cases would be high.
+
+```{r}
+ruleshigh <- apriori(train_arule, parameter = list(support = 0.1, confidence = 0.3,minlen=2,maxlen=10),appearance = list(default = "lhs", rhs = c("label_train.total_cases=high")),control = list(verbose = F))
+
+inspect(head(sort(ruleshigh,by='lift',descreaing=T),20))
+```
+
+plot it
+
+```{r}
+library(arulesViz)
+plot(ruleshigh, measure = c("support", "lift"), shading = "confidence")
+plot(ruleslow, measure = c("support", "lift"), shading = "confidence")
+```
+
+#Section 2: Decision Tree
+
+Install the package for decision tree model building
+
+```{r}
+library(C50)
+library(caret)
+library(rpart)
+library(dplyr)
+```
+
+We consider our Target as totalCases = 0 and totalCases!= 0
+
+```{r}
+dt_train <- mutate(train, label_train.total_cases = ifelse(label_train.total_cases<12, "low","high"))
+dt_valid<-mutate(valid,label_train.total_cases = ifelse(label_train.total_cases<12, "low","high"))
+```
+
+Build the decision tree model
+```{r}
+dt_model <- train(label_train.total_cases ~ ., data = dt_train, metric = "Accuracy", method = "rpart")
+print(dt_model$finalModel)
+```
+
+Predict the model
+```{r}
+dt_predict <- predict(dt_model, newdata = dt_valid, type = "raw")
+head(dt_predict,10)
+```
+
+Tune the model 
+
+```{r}
+dt_model_tune <- train(label_train.total_cases ~ ., data = dt_train, method = "rpart",tuneGrid = expand.grid(cp = seq(0, 0.1, 0.01)))
+print(dt_model_tune$finalModel)
+```
+
+Then post-pruning the model
+```{r}
+dt_model_postprune <- prune(dt_model_tune$finalModel, cp = 0.2)
+print(dt_model_postprune)
+```
+
+Decision Tree Classifer
+
+```{r}
+library(rattle)
+fancyRpartPlot(dt_model_postprune)
+```
+
+#Section 3: KNN and Ensemble Learning Methods
+
+Prepossing the dataset
+
+```{r}
+train_knn<-train
+valid_knn<-valid
+
+train_knn$label_train.total_cases<-discretize(train_knn$label_train.total_cases,method='fixed',breaks=c(0,8,17,461),labels=c("low",'middle',"high"))
+valid_knn$label_train.total_cases<-discretize(valid_knn$label_train.total_cases,method='fixed',breaks=c(0,8,17,461),labels=c("low",'middle',"high"))
+```
+
+Normalization and standardization
+
+```{r}
+pre_process <- preProcess(train_knn, method = c("scale", "center"))
+pre_process
+  
+train_knn1 <- predict(pre_process, newdata = train_knn)
+valid_knn1 <- predict(pre_process, newdata = valid_knn)
+```
+
+##knn models
+
+build the model
+
+```{r}
+model_knn<-train(label_train.total_cases~.,data=train_knn1,method='knn')
+predict_knn<-predict(model_knn,newdata=valid_knn1)
+confusionMatrix(predict_knn,as.factor(valid_knn1$label_train.total_cases))
+```
+
+Tune the knn model to improve the model
+
+```{r}
+model_knn_tune <- train(label_train.total_cases ~ ., data = train_knn1, method = "knn",tuneGrid = data.frame(k = seq(1, 25)),trControl = trainControl(method = "repeatedcv",number = 10, repeats = 3))
+print(model_knn_tune)
+plot(model_knn_tune)
+
+predict_knn_tune <- predict(model_knn_tune, newdata = valid_knn1)
+  confusionMatrix(predict_knn_tune, valid_knn1$label_train.total_cases, positive = "pos")
+```
+
+##bagging 
+
+```{r}
+model_bag <- train(label_train.total_cases ~ ., data = train_knn1, method = "treebag")
+model_bag
+
+predict_bag <- predict(model_bag, newdata = valid_knn1)
+confusionMatrix(predict_bag, valid_knn1$label_train.total_cases)
+```
+
+#Random Forest
+
+```{r}
+require(randomForest)
+require(MASS)
+model_rf <- train(label_train.total_cases ~ ., data = train_knn1, method = "rf")
+model_rf
+
+predict_rf <- predict(model_rf, newdata = valid_knn1)
+confusionMatrix(predict_rf, valid_knn1$label_train.total_cases)
+```
+
+Plot randome forest
+
+```{r}
+varimp_rf <- varImp(model_rf)
+varimp_rf
+  
+plot(varimp_rf, main = "Variable Importance with Random Forest")
+```
+
+#Gradient Boosting Machine (GBM)
+
+```{r}
+model_gbm <- train(label_train.total_cases ~ ., data = train_knn1, method = "gbm")
+predict_gbm <- predict(model_gbm, newdata = valid_knn1)
+confusionMatrix(predict_gbm, valid_knn1$label_train.total_cases)
+```
+
+#Extreme Gradient Boosting (EGB)
+
+```{r}
+model_xgb <- train(label_train.total_cases ~ ., data = train_knn1, method = "xgbTree")
+predict_xgb <- predict(model_xgb, newdata = valid_knn1)
+confusionMatrix(predict_xgb, valid_knn1$label_train.total_cases)
+```
+
+#Section 4: SVM
+
+Data prepare
+
+```{r}
+train_svm<-train_knn
+valid_svm<-valid_knn
+
+```
+
+build the svm linear model 
+
+```{r}
+model_svm_linear<-train(label_train.total_cases ~ .,data=train_svm, method="svmLinear", preProcess=c("center","scale"), trControl=trainControl(method="boot",number=25),tuneGrid=expand.grid(C=seq(0,1,0.1)))
+  
+model_svm_linear
+
+predict_svm_linear <- predict(model_svm_linear, newdata = valid_svm)
+confusionMatrix(predict_svm_linear,valid_svm$label_train.total_cases)
+
+```
+
+SVM with Non-Linear Kernel:RBF
+
+```{r}
+library(kernlab)
+sigDist1 <- sigest(label_train.total_cases~ ., data = train_svm, frac = 1)
+svmTuneGrid1 <- data.frame(.sigma =sigDist1 [1], .C = 2^(-2:7))
+model_svm_rbf<-train(label_train.total_cases~., data=train_svm, preProcess=c("center","scale"),tuneGrid=svmTuneGrid1,method="svmRadial",trControl=trainControl(method="repeatedcv",number = 5))
+
+model_svm_rbf
+plot(model_svm_rbf)
+
+predict_svm_rbf <- predict(model_svm_rbf, newdata = valid_svm)
+confusionMatrix(predict_svm_rbf,valid_svm$label_train.total_cases)
+
+```
+
+#Section 5: Compare the performance
+
+```{r}
+model_comparison<-resamples(list(KNN=model_knn,BAGGING=model_bag,Random_Forest=model_rf,GBM=model_gbm,XGB=model_xgb,SVMlinear=model_svm_linear))
+summary(model_comparison)
+
+scales <- list(x = list(relation = "free"),
+               y = list(relation = "free"))
+
+bwplot(model_comparison, scales = scales)
+```
+
+
+
